@@ -31,6 +31,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstring>
 #include <functional>
 
 // TagLib (lectura de metadatos)
@@ -42,6 +43,7 @@
 // Canal de salida de OBS donde "enchufamos" el reproductor (alto para no
 // chocar con los dispositivos de audio de OBS, que usan los canales 1-6).
 static constexpr int kOutputChannel = 32;
+static const char *kSourceName = "Reproductor de música";
 
 static const QStringList kExtensions = {"mp3", "flac", "ogg", "oga", "opus",
 					"wav", "m4a",  "aac", "wma", "aif",
@@ -426,8 +428,17 @@ void MusicDock::ensureSource()
 	obs_data_set_bool(s, "restart_on_activate", false);
 	obs_data_set_bool(s, "clear_on_media_end", false);
 
-	source_ = obs_source_create_private("ffmpeg_source",
-					    "Music Dock Player", s);
+	// Fuente PÚBLICA: así aparece en el Mezclador de audio de OBS.
+	// Si OBS ya guardó una con este nombre en la colección, se reutiliza.
+	source_ = obs_get_source_by_name(kSourceName);
+	if (source_ && std::strcmp(obs_source_get_id(source_), "ffmpeg_source") != 0) {
+		obs_source_release(source_);
+		source_ = nullptr;
+	}
+	if (source_)
+		obs_source_update(source_, s);
+	else
+		source_ = obs_source_create("ffmpeg_source", kSourceName, s, nullptr);
 	obs_data_release(s);
 	if (!source_) {
 		blog(LOG_WARNING,
@@ -609,6 +620,21 @@ void MusicDock::onTick()
 {
 	if (!source_)
 		return;
+
+	// Si OBS eliminó la fuente (p. ej. al cambiar de colección), se suelta;
+	// se volverá a crear al pulsar play.
+	if (obs_source_removed(source_)) {
+		obs_source_release(source_);
+		source_ = nullptr;
+		playBtn_->setText("▶");
+		return;
+	}
+	// Si el canal de salida se vació, se vuelve a conectar
+	obs_source_t *out = obs_get_output_source(kOutputChannel);
+	if (out != source_)
+		obs_set_output_source(kOutputChannel, source_);
+	if (out)
+		obs_source_release(out);
 
 	const obs_media_state st = obs_source_media_get_state(source_);
 	const bool playing = (st == OBS_MEDIA_STATE_PLAYING);
