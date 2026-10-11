@@ -60,6 +60,7 @@ private:
 	void playIndex(int row);
 	void advance(bool automatic);
 	void stopPlayback();
+	void applyMonitoring();
 
 	void loadFiles(bool replace);
 	void addPaths(const QStringList &paths, bool replace);
@@ -92,6 +93,9 @@ private:
 
 	obs_source *source_ = nullptr;
 	bool sawPlaying_ = false;
+	bool wasPlaying_ = false;
+	qint64 lastPos_ = 0;
+	qint64 lastDur_ = 0;
 	bool loading_ = false;
 	bool shutdown_ = false;
 

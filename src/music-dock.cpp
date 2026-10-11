@@ -458,6 +458,19 @@ void MusicDock::ensureSource()
 	obs_set_output_source(kOutputChannel, source_);
 }
 
+// Quitar y volver a poner el monitoreo obliga a OBS a recrear la salida de
+// monitoreo (es lo mismo que hacías a mano al marcar/desmarcar la casilla).
+void MusicDock::applyMonitoring()
+{
+	if (!source_)
+		return;
+	obs_source_set_monitoring_type(source_, OBS_MONITORING_TYPE_NONE);
+	obs_source_set_monitoring_type(source_,
+				       monitorChk_->isChecked()
+					       ? OBS_MONITORING_TYPE_MONITOR_AND_OUTPUT
+					       : OBS_MONITORING_TYPE_NONE);
+}
+
 void MusicDock::playIndex(int row)
 {
 	if (row < 0 || row >= tracks_.size())
@@ -477,6 +490,10 @@ void MusicDock::playIndex(int row)
 	obs_source_update(source_, s);
 	obs_data_release(s);
 	obs_source_media_restart(source_);
+	applyMonitoring();
+	lastPos_ = 0;
+	lastDur_ = 0;
+	wasPlaying_ = false;
 
 	updateNowPlaying();
 	markCurrent();
@@ -593,8 +610,10 @@ void MusicDock::onRowDoubleClicked(int row, int)
 
 void MusicDock::onSeekReleased()
 {
-	if (source_)
-		obs_source_media_set_time(source_, seekSlider_->value());
+	if (!source_)
+		return;
+	lastPos_ = seekSlider_->value();
+	obs_source_media_set_time(source_, seekSlider_->value());
 }
 
 void MusicDock::onVolumeChanged(int value)
@@ -640,11 +659,21 @@ void MusicDock::onTick()
 	const bool playing = (st == OBS_MEDIA_STATE_PLAYING);
 	playBtn_->setText(playing ? "⏸" : "▶");
 
-	if (playing)
+	if (playing) {
 		sawPlaying_ = true;
+		if (!wasPlaying_)
+			applyMonitoring();
+	}
+	wasPlaying_ = playing;
 
 	const qint64 dur = obs_source_media_get_duration(source_);
 	const qint64 pos = obs_source_media_get_time(source_);
+
+	if (playing) {
+		lastPos_ = pos;
+		if (dur > 0)
+			lastDur_ = dur;
+	}
 
 	if (dur > 0 && !seekSlider_->isSliderDown()) {
 		seekSlider_->setRange(0, int(dur));
@@ -661,10 +690,17 @@ void MusicDock::onTick()
 			n->setText(numberText(curRow_, true));
 	}
 
-	// Fin de canción -> siguiente
+	// Fin de canción -> siguiente (solo si de verdad estaba cerca del final)
 	if (st == OBS_MEDIA_STATE_ENDED && sawPlaying_) {
 		sawPlaying_ = false;
-		advance(true);
+		const bool nearEnd = lastDur_ <= 0 || lastPos_ >= lastDur_ - 2500;
+		if (nearEnd) {
+			advance(true);
+		} else {
+			// "Fin" falso (p. ej. al adelantar): se retoma donde estaba
+			obs_source_media_restart(source_);
+			obs_source_media_set_time(source_, lastPos_);
+		}
 	}
 }
 
