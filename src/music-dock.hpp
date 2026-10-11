@@ -1,5 +1,6 @@
 #pragma once
 
+#include <QElapsedTimer>
 #include <QString>
 #include <QStringList>
 #include <QTimer>
@@ -96,6 +97,9 @@ private:
 	bool wasPlaying_ = false;
 	qint64 lastPos_ = 0;
 	qint64 lastDur_ = 0;
+	qint64 pendingSeekMs_ = -1;
+	int seekTries_ = 0;
+	QElapsedTimer seekTimer_;
 	bool loading_ = false;
 	bool shutdown_ = false;
 

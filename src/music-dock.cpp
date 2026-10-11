@@ -494,6 +494,7 @@ void MusicDock::playIndex(int row)
 	lastPos_ = 0;
 	lastDur_ = 0;
 	wasPlaying_ = false;
+	pendingSeekMs_ = -1;
 
 	updateNowPlaying();
 	markCurrent();
@@ -504,6 +505,7 @@ void MusicDock::playIndex(int row)
 void MusicDock::stopPlayback()
 {
 	sawPlaying_ = false;
+	pendingSeekMs_ = -1;
 	if (source_)
 		obs_source_media_stop(source_);
 	seekSlider_->setValue(0);
@@ -612,8 +614,14 @@ void MusicDock::onSeekReleased()
 {
 	if (!source_)
 		return;
-	lastPos_ = seekSlider_->value();
-	obs_source_media_set_time(source_, seekSlider_->value());
+	const qint64 target = seekSlider_->value();
+	lastPos_ = target;
+	pendingSeekMs_ = target;
+	seekTries_ = 0;
+	seekTimer_.start();
+	blog(LOG_INFO, "[obs-music-dock] Adelantar a %lld ms (estado %d)",
+	     (long long)target, (int)obs_source_media_get_state(source_));
+	obs_source_media_set_time(source_, target);
 }
 
 void MusicDock::onVolumeChanged(int value)
@@ -665,14 +673,33 @@ void MusicDock::onTick()
 			applyMonitoring();
 	}
 	wasPlaying_ = playing;
+	if (playing && pendingSeekMs_ >= 0 && seekTries_ == 1 &&
+	    seekTimer_.elapsed() > 250) {
+		obs_source_media_set_time(source_, pendingSeekMs_);
+		seekTries_ = 2;
+		seekTimer_.restart();
+	}
 
 	const qint64 dur = obs_source_media_get_duration(source_);
 	const qint64 pos = obs_source_media_get_time(source_);
 
-	if (playing) {
+	if (playing && pendingSeekMs_ < 0) {
 		lastPos_ = pos;
 		if (dur > 0)
 			lastDur_ = dur;
+	}
+
+	// No repetir set_time mientras el decodificador procesa el seek.
+	// Los reintentos periódicos pueden provocar nuevos flushes y falsos EOF.
+	if (pendingSeekMs_ >= 0 && playing && seekTimer_.elapsed() > 700) {
+		const qint64 expected = pendingSeekMs_ + seekTimer_.elapsed();
+		if (std::llabs(pos - expected) < 2500) {
+			pendingSeekMs_ = -1;
+		} else if (seekTimer_.elapsed() > 3000) {
+			blog(LOG_WARNING, "[obs-music-dock] Seek sin confirmar: pos=%lld objetivo=%lld",
+			     (long long)pos, (long long)pendingSeekMs_);
+			pendingSeekMs_ = -1;
+		}
 	}
 
 	if (dur > 0 && !seekSlider_->isSliderDown()) {
@@ -693,13 +720,27 @@ void MusicDock::onTick()
 	// Fin de canción -> siguiente (solo si de verdad estaba cerca del final)
 	if (st == OBS_MEDIA_STATE_ENDED && sawPlaying_) {
 		sawPlaying_ = false;
-		const bool nearEnd = lastDur_ <= 0 || lastPos_ >= lastDur_ - 2500;
+		const qint64 ref = pendingSeekMs_ >= 0 ? pendingSeekMs_ : lastPos_;
+		const bool nearEnd = lastDur_ <= 0 || ref >= lastDur_ - 2500;
 		if (nearEnd) {
+			pendingSeekMs_ = -1;
 			advance(true);
 		} else {
-			// "Fin" falso (p. ej. al adelantar): se retoma donde estaba
-			obs_source_media_restart(source_);
-			obs_source_media_set_time(source_, lastPos_);
+			// "Fin" falso (p. ej. al adelantar): se reinicia y se
+			// vuelve a intentar el salto cuando ya esté sonando
+			blog(LOG_INFO,
+			     "[obs-music-dock] Fin falso; se retoma en %lld ms",
+			     (long long)ref);
+			pendingSeekMs_ = ref;
+			seekTries_ = 0;
+			seekTimer_.restart();
+			if (seekTries_++ == 0) {
+				obs_source_media_restart(source_);
+				// Esperar a PLAYING antes de reubicar el decodificador.
+			} else {
+				blog(LOG_WARNING, "[obs-music-dock] Recuperación de seek fallida");
+				pendingSeekMs_ = -1;
+			}
 		}
 	}
 }
